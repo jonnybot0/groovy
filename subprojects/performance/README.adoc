@@ -55,3 +55,67 @@ To run a single benchmark or a matched set of benchmarks, use the
 The `benchInclude` property will perform a partial match against package
 names or class names. It is equivalent to `.*${benchInclude}.*`.
 
+== InvokeDynamic Performance Benchmarks
+
+A set of benchmarks specifically designed to investigate and isolate performance
+issues with Groovy's invokedynamic implementation. See `INDY_PERFORMANCE_PLAN.md`
+for the full testing plan and background.
+
+=== Available Benchmark Suites
+
+==== Cold Call Benchmarks (`ColdCallBench`)
+
+Measures the cost of method invocations before callsites are optimized.
+This is critical for web applications where objects are created per-request.
+
+    ./gradlew -Pindy=true -PbenchInclude=ColdCallBench :perf:jmh
+
+==== Warmup Behavior Benchmarks (`WarmupBehaviorBench`)
+
+Tests performance at different warmup levels (10, 100, 1000, 10000+ calls)
+to understand how the optimization threshold affects performance.
+
+    ./gradlew -Pindy=true -PbenchInclude=WarmupBehavior :perf:jmh
+
+==== Threshold Sensitivity Benchmarks (`ThresholdSensitivityBench`)
+
+Tests different usage patterns (web request, batch processing, mixed) to
+understand which patterns benefit from different threshold configurations.
+
+    ./gradlew -Pindy=true -PbenchInclude=ThresholdSensitivity :perf:jmh
+
+==== Cache Invalidation Benchmarks (`CacheInvalidationBench`)
+
+Tests polymorphic dispatch scenarios that cause inline cache invalidation,
+addressing issues described in GROOVY-8298.
+
+    ./gradlew -Pindy=true -PbenchInclude=CacheInvalidation :perf:jmh
+
+==== Property Access Benchmarks (`PropertyAccessBench`)
+
+Tests GORM-like property access patterns common in Grails applications.
+
+    ./gradlew -Pindy=true -PbenchInclude=PropertyAccess :perf:jmh
+
+=== Comparing Indy vs Non-Indy
+
+Run the same benchmark with and without invokedynamic to measure the overhead:
+
+    # With invokedynamic (Groovy 4 default)
+    ./gradlew -Pindy=true -PbenchInclude=ColdCallBench :perf:jmh
+
+    # Without invokedynamic (classic bytecode)
+    ./gradlew -Pindy=false -PbenchInclude=ColdCallBench :perf:jmh
+
+=== Tuning Thresholds
+
+The invokedynamic implementation has configurable thresholds:
+
+- `groovy.indy.optimize.threshold` (default: 10000) - Calls before optimization
+- `groovy.indy.fallback.threshold` (default: 10000) - Fallbacks before reset
+
+Test with different thresholds using JVM arguments:
+
+    ./gradlew -Pindy=true -PbenchInclude=ThresholdSensitivity :perf:jmh \
+        --jvmArgs="-Dgroovy.indy.optimize.threshold=100"
+
