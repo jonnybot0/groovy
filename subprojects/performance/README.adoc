@@ -21,14 +21,28 @@
 
 = Performance
 
-This subproject contains two sets of performance related tests, compiler tests
-and benchmarks.
+This subproject contains performance tests and JMH benchmarks for Apache Groovy,
+with a particular focus on investigating invokedynamic performance characteristics.
+
+== Quick Start
+
+[source,bash]
+----
+# Run all benchmarks (indy mode)
+./gradlew -Pindy=true :performance:jmh
+
+# Run specific benchmark suite
+./gradlew -Pindy=true -PbenchInclude=ColdCall :performance:jmh
+
+# Compare indy vs non-indy
+./gradlew :performance:jmhCompare
+----
 
 == Compiler Performance Tests
 
 The compiler tests can be run using the following Gradle task:
 
-    ./gradlew :perf:performanceTests
+    ./gradlew :performance:performanceTests
 
 This will compile various source files using several past versions of Apache
 Groovy in addition to the current source version.
@@ -37,65 +51,62 @@ Groovy in addition to the current source version.
 
 JMH Benchmarks can be run using:
 
-    ./gradlew :perf:jmh
+    ./gradlew :performance:jmh
 
 In order to run the benchmarks against InvokeDynamic generated classes use
 the `indy` property:
 
-    ./gradlew -Pindy=true :perf:jmh
-
-Groovy and Java sources placed in `src/test` will also be available to the
-benchmarks.
+    ./gradlew -Pindy=true :performance:jmh
 
 To run a single benchmark or a matched set of benchmarks, use the
 `benchInclude` property:
 
-    ./gradlew -PbenchInclude=CallsiteBench :perf:jmh
+    ./gradlew -PbenchInclude=CallsiteBench :performance:jmh
 
 The `benchInclude` property will perform a partial match against package
 names or class names. It is equivalent to `.*${benchInclude}.*`.
 
 == InvokeDynamic Performance Benchmarks
 
-A set of benchmarks specifically designed to investigate and isolate performance
+A comprehensive set of benchmarks designed to investigate and isolate performance
 issues with Groovy's invokedynamic implementation. See `INDY_PERFORMANCE_PLAN.md`
 for the full testing plan and background.
 
-=== Available Benchmark Suites
+=== Phase 1: Core Performance Benchmarks
 
 ==== Cold Call Benchmarks (`ColdCallBench`)
 
 Measures the cost of method invocations before callsites are optimized.
-This is critical for web applications where objects are created per-request.
+Critical for web applications where objects are created per-request.
 
-    ./gradlew -Pindy=true -PbenchInclude=ColdCallBench :perf:jmh
+    ./gradlew -Pindy=true -PbenchInclude=ColdCallBench :performance:jmh
 
 ==== Warmup Behavior Benchmarks (`WarmupBehaviorBench`)
 
 Tests performance at different warmup levels (10, 100, 1000, 10000+ calls)
 to understand how the optimization threshold affects performance.
 
-    ./gradlew -Pindy=true -PbenchInclude=WarmupBehavior :perf:jmh
+    ./gradlew -Pindy=true -PbenchInclude=WarmupBehavior :performance:jmh
 
 ==== Threshold Sensitivity Benchmarks (`ThresholdSensitivityBench`)
 
 Tests different usage patterns (web request, batch processing, mixed) to
 understand which patterns benefit from different threshold configurations.
 
-    ./gradlew -Pindy=true -PbenchInclude=ThresholdSensitivity :perf:jmh
+    ./gradlew -Pindy=true -PbenchInclude=ThresholdSensitivity :performance:jmh
 
 ==== Cache Invalidation Benchmarks (`CacheInvalidationBench`)
 
 Tests polymorphic dispatch scenarios that cause inline cache invalidation,
 addressing issues described in GROOVY-8298.
 
-    ./gradlew -Pindy=true -PbenchInclude=CacheInvalidation :perf:jmh
+    ./gradlew -Pindy=true -PbenchInclude=CacheInvalidation :performance:jmh
 
 ==== Property Access Benchmarks (`PropertyAccessBench`)
 
 Tests GORM-like property access patterns common in Grails applications.
 
-    ./gradlew -Pindy=true -PbenchInclude=PropertyAccess :perf:jmh
+    ./gradlew -Pindy=true -PbenchInclude=PropertyAccess :performance:jmh
 
 ==== Memory Allocation Benchmarks (`MemoryAllocationBench`)
 
@@ -103,11 +114,11 @@ Measures heap growth and allocation rates during Groovy operations.
 Quantifies the memory overhead of MethodHandleWrapper AtomicLong objects
 and CacheableCallSite LRU cache entries.
 
-    ./gradlew -Pindy=true -PbenchInclude=MemoryAllocation :perf:jmh
+    ./gradlew -Pindy=true -PbenchInclude=MemoryAllocation :performance:jmh
 
 For detailed allocation profiling with GC metrics:
 
-    ./gradlew -Pindy=true -PbenchInclude=MemoryAllocation :perf:jmh -Pjmh.profilers=gc
+    ./gradlew -Pindy=true -PbenchInclude=MemoryAllocation :performance:jmh -Pjmh.profilers=gc
 
 ==== Callsite Growth Benchmarks (`CallsiteGrowthBench`)
 
@@ -115,51 +126,199 @@ Measures how memory grows as unique callsites accumulate. Tests with
 parameterized callsite counts (100, 1000, 10000) to quantify the ~32 bytes
 per cached method handle overhead.
 
-    ./gradlew -Pindy=true -PbenchInclude=CallsiteGrowth :perf:jmh
+    ./gradlew -Pindy=true -PbenchInclude=CallsiteGrowth :performance:jmh
 
 ==== Long-Running Session Benchmarks (`LongRunningSessionBench`)
 
 Simulates web application memory patterns over time: request cycles,
 sustained load, and memory recovery after GC.
 
-    ./gradlew -Pindy=true -PbenchInclude=LongRunningSession :perf:jmh
+    ./gradlew -Pindy=true -PbenchInclude=LongRunningSession :performance:jmh
 
-=== Memory Pressure Analysis
+=== Phase 2: Grails-Realistic Scenario Tests
 
-To compare memory overhead between indy and non-indy modes:
+These benchmarks simulate real-world Grails application patterns.
 
-    # Capture non-indy baseline
-    ./gradlew -Pindy=false -PbenchInclude=Memory :perf:jmh > noindy-memory.txt
+==== Request Lifecycle Benchmarks (`RequestLifecycleBench`)
 
-    # Capture indy memory profile
-    ./gradlew -Pindy=true -PbenchInclude=Memory :perf:jmh > indy-memory.txt
+Simulates full HTTP request lifecycle in a Grails-like application:
 
-    # Compare results
-    diff noindy-memory.txt indy-memory.txt
+* Controller receives request (params parsing)
+* Service layer invocation (transactional context)
+* Domain object manipulation (property access, validation)
+* Model building for view
 
-For comprehensive memory analysis with GC profiler:
+    ./gradlew -Pindy=true -PbenchInclude=RequestLifecycle :performance:jmh
 
-    ./gradlew -Pindy=true -PbenchInclude=Memory :perf:jmh -Pjmh.profilers=gc
+==== Template Render Benchmarks (`TemplateRenderBench`)
 
-=== Comparing Indy vs Non-Indy
+Simulates GSP-like template rendering with heavy property access:
 
-Run the same benchmark with and without invokedynamic to measure the overhead:
+* Property access on model objects (`${person.name}`)
+* Collection iteration (`g:each`)
+* GString interpolation
+* Spread operators (`people*.name`)
 
-    # With invokedynamic (Groovy 4 default)
-    ./gradlew -Pindy=true -PbenchInclude=ColdCallBench :perf:jmh
+    ./gradlew -Pindy=true -PbenchInclude=TemplateRender :performance:jmh
 
-    # Without invokedynamic (classic bytecode)
-    ./gradlew -Pindy=false -PbenchInclude=ColdCallBench :perf:jmh
+==== Mini-Grails Domain Model
+
+The `grailslike` package contains realistic domain classes:
+
+* `DomainObject` - Base class with dirty tracking, validation
+* `Person`, `Order`, `OrderItem` - E-commerce entities
+* `User`, `Role`, `Customer`, `Product` - Additional domain classes
+* `DynamicService` - Service with methodMissing for dynamic finders
+* `TransactionalSimulator` - Transaction boundary simulation
+* `ControllerSimulator` - Request handling patterns
+* `TemplateSimulator` - GSP-like rendering
+
+=== Phase 3: Comparison Infrastructure
+
+==== Automated Indy vs Non-Indy Comparison
+
+[source,bash]
+----
+# Run both modes and generate comparison report
+./gradlew :performance:jmhCompare
+
+# Or run individually
+./gradlew :performance:jmhIndy
+./gradlew :performance:jmhNonIndy
+----
+
+The comparison report is saved to `build/results/jmh-compare/comparison-report.txt`.
+
+==== Threshold Parameter Sweep
+
+Test multiple threshold values to find optimal settings:
+
+[source,bash]
+----
+./gradlew :performance:jmhThresholdSweep
+----
+
+Tests thresholds: 0, 10, 100, 1000, 10000, 100000
+
+Results saved to `build/results/jmh-compare/threshold-sweep/threshold-summary.txt`.
+
+=== Phase 4: Profiling Integration
+
+==== JFR Profiling
+
+Run benchmarks with Java Flight Recorder:
+
+[source,bash]
+----
+./gradlew -Pindy=true :performance:jmhProfile
+----
+
+JFR output saved to `build/results/jmh-profile/benchmark.jfr`.
+
+Analyze with:
+[source,bash]
+----
+jfr print build/results/jmh-profile/benchmark.jfr
+jfr summary build/results/jmh-profile/benchmark.jfr
+# Or open in JDK Mission Control (jmc)
+----
+
+==== GC Profiling
+
+Run with JMH's GC profiler for detailed memory analysis:
+
+[source,bash]
+----
+./gradlew -Pindy=true :performance:jmhGcProfile
+----
+
+==== Memory Tracking Benchmarks
+
+Use `MemoryTrackingState` in benchmarks for detailed heap tracking:
+
+[source,bash]
+----
+./gradlew -Pindy=true -PbenchInclude=MemoryProfile :performance:jmh
+----
+
+=== Phase 5: Baseline Management & CI
+
+==== Saving Baselines
+
+[source,bash]
+----
+# Run benchmarks
+./gradlew -Pindy=true :performance:jmh
+
+# Save as baseline
+./gradlew :performance:jmhSaveBaseline -PbaselineName=groovy-4.0.x-indy
+----
+
+==== Comparing Against Baselines
+
+[source,bash]
+----
+# Compare against most recent baseline
+./gradlew :performance:jmh
+./gradlew :performance:jmhCompareBaseline
+
+# Compare against specific baseline
+./gradlew :performance:jmhCompareBaseline -PbaselineName=groovy-4.0.x-indy
+----
+
+==== CI Integration
+
+Performance benchmarks run automatically via GitHub Actions:
+
+* **On PRs**: Smoke tests for performance-related changes
+* **Weekly**: Full benchmark suite with indy/non-indy comparison
+* **On demand**: Via workflow_dispatch with customizable filters
+
+See `.github/workflows/groovy-performance.yml` for details.
 
 === Tuning Thresholds
 
 The invokedynamic implementation has configurable thresholds:
 
-- `groovy.indy.optimize.threshold` (default: 10000) - Calls before optimization
-- `groovy.indy.fallback.threshold` (default: 10000) - Fallbacks before reset
+* `groovy.indy.optimize.threshold` (default: 10000) - Calls before optimization
+* `groovy.indy.fallback.threshold` (default: 10000) - Fallbacks before reset
 
-Test with different thresholds using JVM arguments:
+Test with different thresholds:
 
-    ./gradlew -Pindy=true -PbenchInclude=ThresholdSensitivity :perf:jmh \
-        --jvmArgs="-Dgroovy.indy.optimize.threshold=100"
+[source,bash]
+----
+./gradlew -Pindy=true -PbenchInclude=ThresholdSensitivity :performance:jmh \
+    --jvmArgs="-Dgroovy.indy.optimize.threshold=100"
+----
 
+=== Benchmark Categories by Use Case
+
+==== For Web Application Performance
+
+Focus on cold call and request lifecycle:
+
+[source,bash]
+----
+./gradlew -Pindy=true -PbenchInclude="ColdCall|RequestLifecycle|Template" :performance:jmh
+----
+
+==== For Memory Investigation
+
+[source,bash]
+----
+./gradlew -Pindy=true -PbenchInclude=Memory :performance:jmh -Pjmh.profilers=gc
+----
+
+==== For Polymorphic Dispatch Issues
+
+[source,bash]
+----
+./gradlew -Pindy=true -PbenchInclude="CacheInvalidation|Dispatch" :performance:jmh
+----
+
+==== For Full Regression Testing
+
+[source,bash]
+----
+./gradlew :performance:jmhCompare
+----

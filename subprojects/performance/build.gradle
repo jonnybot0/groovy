@@ -31,3 +31,461 @@ performanceTests {
             project.files('src/jmh/groovy/org/apache/groovy/bench/Ary.groovy') +
             project.files('src/jmh/groovy/org/apache/groovy/bench/Fibo.groovy')
 }
+
+// ============================================================================
+// Indy vs Non-Indy Comparison Infrastructure
+// ============================================================================
+
+def jmhResultsDir = layout.buildDirectory.dir("results/jmh")
+def jmhCompareDir = layout.buildDirectory.dir("results/jmh-compare")
+
+/**
+ * Run JMH benchmarks with invokedynamic enabled.
+ * Results are saved to build/results/jmh-compare/indy-results.txt
+ */
+tasks.register('jmhIndy', JavaExec) {
+    dependsOn 'jmhJar'
+    group = 'benchmark'
+    description = 'Run JMH benchmarks with invokedynamic enabled'
+
+    mainClass = 'org.openjdk.jmh.Main'
+    classpath = files(tasks.named('jmhJar'))
+
+    def outputFile = jmhCompareDir.map { it.file("indy-results.txt") }
+
+    args '-rf', 'text'
+    args '-rff', outputFile.get().asFile.absolutePath
+
+    // Include filter if specified
+    if (project.hasProperty('benchInclude')) {
+        args '-e', '.*' + project.benchInclude + '.*'
+    }
+
+    jvmArgs '-Dgroovy.target.indy=true'
+
+    doFirst {
+        jmhCompareDir.get().asFile.mkdirs()
+        println "Running JMH with invokedynamic ENABLED"
+        println "Results will be saved to: ${outputFile.get().asFile}"
+    }
+}
+
+/**
+ * Run JMH benchmarks with invokedynamic disabled (classic bytecode).
+ * Results are saved to build/results/jmh-compare/noindy-results.txt
+ */
+tasks.register('jmhNonIndy', JavaExec) {
+    dependsOn 'jmhJar'
+    group = 'benchmark'
+    description = 'Run JMH benchmarks with invokedynamic disabled (classic bytecode)'
+
+    mainClass = 'org.openjdk.jmh.Main'
+    classpath = files(tasks.named('jmhJar'))
+
+    def outputFile = jmhCompareDir.map { it.file("noindy-results.txt") }
+
+    args '-rf', 'text'
+    args '-rff', outputFile.get().asFile.absolutePath
+
+    // Include filter if specified
+    if (project.hasProperty('benchInclude')) {
+        args '-e', '.*' + project.benchInclude + '.*'
+    }
+
+    jvmArgs '-Dgroovy.target.indy=false'
+
+    doFirst {
+        jmhCompareDir.get().asFile.mkdirs()
+        println "Running JMH with invokedynamic DISABLED"
+        println "Results will be saved to: ${outputFile.get().asFile}"
+    }
+}
+
+/**
+ * Run both indy and non-indy benchmarks and generate comparison report.
+ */
+tasks.register('jmhCompare') {
+    dependsOn 'jmhIndy', 'jmhNonIndy'
+    group = 'benchmark'
+    description = 'Run benchmarks with and without invokedynamic and compare results'
+
+    def indyResults = jmhCompareDir.map { it.file("indy-results.txt") }
+    def nonIndyResults = jmhCompareDir.map { it.file("noindy-results.txt") }
+    def comparisonReport = jmhCompareDir.map { it.file("comparison-report.txt") }
+
+    doLast {
+        def indyFile = indyResults.get().asFile
+        def nonIndyFile = nonIndyResults.get().asFile
+        def reportFile = comparisonReport.get().asFile
+
+        if (!indyFile.exists() || !nonIndyFile.exists()) {
+            println "ERROR: Results files not found. Run jmhIndy and jmhNonIndy first."
+            return
+        }
+
+        def parseResults = { File file ->
+            def results = [:]
+            file.eachLine { line ->
+                // Parse JMH result lines: BenchmarkName  Mode  Cnt  Score  Error  Units
+                def match = line =~ /^(\S+)\s+(\S+)\s+(\d+)\s+([\d.]+)\s*±?\s*([\d.]*)\s*(\S+)/
+                if (match) {
+                    def name = match[0][1]
+                    def score = match[0][4] as double
+                    def error = match[0][5] ? (match[0][5] as double) : 0.0
+                    def unit = match[0][6]
+                    results[name] = [score: score, error: error, unit: unit]
+                }
+            }
+            results
+        }
+
+        def indyData = parseResults(indyFile)
+        def nonIndyData = parseResults(nonIndyFile)
+
+        reportFile.withWriter { writer ->
+            writer.writeLine "=" * 80
+            writer.writeLine "INVOKEDYNAMIC PERFORMANCE COMPARISON REPORT"
+            writer.writeLine "Generated: ${new Date()}"
+            writer.writeLine "=" * 80
+            writer.writeLine ""
+
+            def allBenchmarks = (indyData.keySet() + nonIndyData.keySet()).unique().sort()
+
+            writer.writeLine String.format("%-60s %12s %12s %12s", "Benchmark", "Indy", "Non-Indy", "Ratio")
+            writer.writeLine "-" * 100
+
+            allBenchmarks.each { name ->
+                def indy = indyData[name]
+                def nonIndy = nonIndyData[name]
+
+                if (indy && nonIndy) {
+                    def ratio = indy.score / nonIndy.score
+                    def ratioStr = String.format("%.2fx", ratio)
+                    if (ratio > 1.1) ratioStr += " SLOWER"
+                    else if (ratio < 0.9) ratioStr += " FASTER"
+
+                    writer.writeLine String.format("%-60s %12.3f %12.3f %12s",
+                        name.length() > 60 ? "..." + name[-57..-1] : name,
+                        indy.score, nonIndy.score, ratioStr)
+                }
+            }
+
+            writer.writeLine ""
+            writer.writeLine "=" * 80
+            writer.writeLine "Notes:"
+            writer.writeLine "- Ratio > 1.0 means indy is SLOWER than non-indy"
+            writer.writeLine "- Ratio < 1.0 means indy is FASTER than non-indy"
+            writer.writeLine "- Use -PbenchInclude=<pattern> to filter benchmarks"
+            writer.writeLine "=" * 80
+        }
+
+        println ""
+        println "Comparison report saved to: ${reportFile}"
+        println ""
+        println reportFile.text
+    }
+}
+
+// ============================================================================
+// Threshold Parameter Sweep
+// ============================================================================
+
+/**
+ * Run benchmarks with different optimize threshold values.
+ * Helps determine optimal threshold for different workloads.
+ */
+tasks.register('jmhThresholdSweep') {
+    group = 'benchmark'
+    description = 'Run benchmarks with varying groovy.indy.optimize.threshold values'
+
+    def thresholds = [0, 10, 100, 1000, 10000, 100000]
+    def sweepDir = jmhCompareDir.map { it.dir("threshold-sweep") }
+
+    doFirst {
+        sweepDir.get().asFile.mkdirs()
+    }
+
+    doLast {
+        def results = [:]
+
+        thresholds.each { threshold ->
+            println ""
+            println "=" * 60
+            println "Running with groovy.indy.optimize.threshold = ${threshold}"
+            println "=" * 60
+
+            def outputFile = sweepDir.get().file("threshold-${threshold}.txt").asFile
+
+            // Run JMH with this threshold
+            project.javaexec {
+                mainClass = 'org.openjdk.jmh.Main'
+                classpath = files(tasks.named('jmhJar'))
+                args '-rf', 'text'
+                args '-rff', outputFile.absolutePath
+                args '-wi', '3'  // Reduced warmup for sweep
+                args '-i', '3'   // Reduced iterations for sweep
+                args '-f', '1'   // Single fork for sweep
+
+                if (project.hasProperty('benchInclude')) {
+                    args '.*' + project.benchInclude + '.*'
+                }
+
+                jvmArgs "-Dgroovy.indy.optimize.threshold=${threshold}"
+                jvmArgs '-Dgroovy.target.indy=true'
+            }
+
+            // Parse results
+            if (outputFile.exists()) {
+                outputFile.eachLine { line ->
+                    def match = line =~ /^(\S+)\s+\S+\s+\d+\s+([\d.]+)/
+                    if (match) {
+                        def name = match[0][1]
+                        def score = match[0][2] as double
+                        if (!results[name]) results[name] = [:]
+                        results[name][threshold] = score
+                    }
+                }
+            }
+        }
+
+        // Generate summary report
+        def summaryFile = sweepDir.get().file("threshold-summary.txt").asFile
+        summaryFile.withWriter { writer ->
+            writer.writeLine "=" * 100
+            writer.writeLine "THRESHOLD SWEEP SUMMARY"
+            writer.writeLine "Generated: ${new Date()}"
+            writer.writeLine "=" * 100
+            writer.writeLine ""
+            writer.writeLine String.format("%-50s %s", "Benchmark", thresholds.collect { String.format("%10d", it) }.join(""))
+            writer.writeLine "-" * 100
+
+            results.keySet().sort().each { name ->
+                def scores = thresholds.collect { t ->
+                    results[name][t] ? String.format("%10.3f", results[name][t]) : String.format("%10s", "N/A")
+                }.join("")
+                writer.writeLine String.format("%-50s %s",
+                    name.length() > 50 ? "..." + name[-47..-1] : name,
+                    scores)
+            }
+
+            writer.writeLine ""
+            writer.writeLine "Optimal thresholds by benchmark:"
+            writer.writeLine "-" * 50
+            results.keySet().sort().each { name ->
+                def scores = results[name]
+                def optimal = scores.min { it.value }?.key
+                if (optimal != null) {
+                    writer.writeLine String.format("%-50s %d",
+                        name.length() > 50 ? "..." + name[-47..-1] : name,
+                        optimal)
+                }
+            }
+        }
+
+        println ""
+        println "Threshold sweep summary saved to: ${summaryFile}"
+        println ""
+        println summaryFile.text
+    }
+}
+
+// ============================================================================
+// Profiling Support
+// ============================================================================
+
+/**
+ * Run JMH with JFR (Java Flight Recorder) profiling enabled.
+ */
+tasks.register('jmhProfile', JavaExec) {
+    dependsOn 'jmhJar'
+    group = 'benchmark'
+    description = 'Run JMH benchmarks with JFR profiling enabled'
+
+    mainClass = 'org.openjdk.jmh.Main'
+    classpath = files(tasks.named('jmhJar'))
+
+    def profileDir = layout.buildDirectory.dir("results/jmh-profile")
+    def jfrFile = profileDir.map { it.file("benchmark.jfr") }
+
+    // Reduce iterations for profiling
+    args '-wi', '2'
+    args '-i', '3'
+    args '-f', '1'
+
+    if (project.hasProperty('benchInclude')) {
+        args '.*' + project.benchInclude + '.*'
+    }
+
+    jvmArgs '-XX:+FlightRecorder'
+    jvmArgs "-XX:StartFlightRecording=duration=60s,filename=${jfrFile.get().asFile.absolutePath}"
+
+    if (project.hasProperty('indy') && project.indy == 'true') {
+        jvmArgs '-Dgroovy.target.indy=true'
+    }
+
+    doFirst {
+        profileDir.get().asFile.mkdirs()
+        println "Running JMH with JFR profiling"
+        println "JFR output will be saved to: ${jfrFile.get().asFile}"
+        println ""
+        println "After completion, analyze with:"
+        println "  jfr print ${jfrFile.get().asFile}"
+        println "  jfr summary ${jfrFile.get().asFile}"
+        println "Or open in JDK Mission Control (jmc)"
+    }
+}
+
+/**
+ * Run JMH with GC profiler for memory analysis.
+ */
+tasks.register('jmhGcProfile', JavaExec) {
+    dependsOn 'jmhJar'
+    group = 'benchmark'
+    description = 'Run JMH benchmarks with GC profiler for memory analysis'
+
+    mainClass = 'org.openjdk.jmh.Main'
+    classpath = files(tasks.named('jmhJar'))
+
+    def outputFile = jmhResultsDir.map { it.file("gc-profile-results.txt") }
+
+    args '-rf', 'text'
+    args '-rff', outputFile.get().asFile.absolutePath
+    args '-prof', 'gc'
+
+    if (project.hasProperty('benchInclude')) {
+        args '.*' + project.benchInclude + '.*'
+    }
+
+    if (project.hasProperty('indy') && project.indy == 'true') {
+        jvmArgs '-Dgroovy.target.indy=true'
+    }
+
+    doFirst {
+        println "Running JMH with GC profiler"
+        println "Results will be saved to: ${outputFile.get().asFile}"
+    }
+}
+
+// ============================================================================
+// Baseline Management
+// ============================================================================
+
+def baselinesDir = file("baselines")
+
+/**
+ * Save current benchmark results as a baseline.
+ */
+tasks.register('jmhSaveBaseline') {
+    dependsOn 'jmh'
+    group = 'benchmark'
+    description = 'Save current JMH results as a baseline for future comparison'
+
+    doLast {
+        def baselineName = project.hasProperty('baselineName') ? project.baselineName : "baseline-${new Date().format('yyyyMMdd-HHmmss')}"
+        def resultsFile = jmhResultsDir.get().file("results.txt").asFile
+        def baselineFile = new File(baselinesDir, "${baselineName}.txt")
+
+        if (!resultsFile.exists()) {
+            println "ERROR: No JMH results found. Run jmh first."
+            return
+        }
+
+        baselinesDir.mkdirs()
+        baselineFile.text = resultsFile.text
+
+        println "Baseline saved to: ${baselineFile}"
+    }
+}
+
+/**
+ * Compare current results against a saved baseline.
+ */
+tasks.register('jmhCompareBaseline') {
+    dependsOn 'jmh'
+    group = 'benchmark'
+    description = 'Compare current JMH results against a saved baseline'
+
+    doLast {
+        def baselineName = project.hasProperty('baselineName') ? project.baselineName : null
+        def baselineFile = baselineName ? new File(baselinesDir, "${baselineName}.txt") : null
+
+        // Find most recent baseline if not specified
+        if (!baselineFile?.exists()) {
+            def baselines = baselinesDir.listFiles()?.findAll { it.name.endsWith('.txt') }?.sort { -it.lastModified() }
+            baselineFile = baselines?.first()
+        }
+
+        if (!baselineFile?.exists()) {
+            println "ERROR: No baseline found. Run jmhSaveBaseline first."
+            return
+        }
+
+        def currentFile = jmhResultsDir.get().file("results.txt").asFile
+        if (!currentFile.exists()) {
+            println "ERROR: No current results found. Run jmh first."
+            return
+        }
+
+        def parseResults = { File file ->
+            def results = [:]
+            file.eachLine { line ->
+                def match = line =~ /^(\S+)\s+(\S+)\s+(\d+)\s+([\d.]+)\s*±?\s*([\d.]*)\s*(\S+)/
+                if (match) {
+                    def name = match[0][1]
+                    def score = match[0][4] as double
+                    results[name] = score
+                }
+            }
+            results
+        }
+
+        def baseline = parseResults(baselineFile)
+        def current = parseResults(currentFile)
+
+        println ""
+        println "=" * 80
+        println "BASELINE COMPARISON"
+        println "Baseline: ${baselineFile.name}"
+        println "Current:  ${currentFile.name}"
+        println "=" * 80
+        println ""
+        println String.format("%-50s %12s %12s %12s", "Benchmark", "Baseline", "Current", "Change")
+        println "-" * 90
+
+        def allBenchmarks = (baseline.keySet() + current.keySet()).unique().sort()
+        def regressions = []
+        def improvements = []
+
+        allBenchmarks.each { name ->
+            def baseScore = baseline[name]
+            def currScore = current[name]
+
+            if (baseScore && currScore) {
+                def change = ((currScore - baseScore) / baseScore) * 100
+                def changeStr = String.format("%+.1f%%", change)
+
+                if (change > 10) {
+                    changeStr += " REGRESSION"
+                    regressions << [name: name, change: change]
+                } else if (change < -10) {
+                    changeStr += " IMPROVED"
+                    improvements << [name: name, change: change]
+                }
+
+                println String.format("%-50s %12.3f %12.3f %12s",
+                    name.length() > 50 ? "..." + name[-47..-1] : name,
+                    baseScore, currScore, changeStr)
+            }
+        }
+
+        println ""
+        if (regressions) {
+            println "REGRESSIONS (>10% slower):"
+            regressions.each { println "  - ${it.name}: ${String.format('%+.1f%%', it.change)}" }
+        }
+        if (improvements) {
+            println "IMPROVEMENTS (>10% faster):"
+            improvements.each { println "  - ${it.name}: ${String.format('%+.1f%%', it.change)}" }
+        }
+    }
+}
