@@ -97,6 +97,50 @@ Tests GORM-like property access patterns common in Grails applications.
 
     ./gradlew -Pindy=true -PbenchInclude=PropertyAccess :perf:jmh
 
+==== Memory Allocation Benchmarks (`MemoryAllocationBench`)
+
+Measures heap growth and allocation rates during Groovy operations.
+Quantifies the memory overhead of MethodHandleWrapper AtomicLong objects
+and CacheableCallSite LRU cache entries.
+
+    ./gradlew -Pindy=true -PbenchInclude=MemoryAllocation :perf:jmh
+
+For detailed allocation profiling with GC metrics:
+
+    ./gradlew -Pindy=true -PbenchInclude=MemoryAllocation :perf:jmh -Pjmh.profilers=gc
+
+==== Callsite Growth Benchmarks (`CallsiteGrowthBench`)
+
+Measures how memory grows as unique callsites accumulate. Tests with
+parameterized callsite counts (100, 1000, 10000) to quantify the ~32 bytes
+per cached method handle overhead.
+
+    ./gradlew -Pindy=true -PbenchInclude=CallsiteGrowth :perf:jmh
+
+==== Long-Running Session Benchmarks (`LongRunningSessionBench`)
+
+Simulates web application memory patterns over time: request cycles,
+sustained load, and memory recovery after GC.
+
+    ./gradlew -Pindy=true -PbenchInclude=LongRunningSession :perf:jmh
+
+=== Memory Pressure Analysis
+
+To compare memory overhead between indy and non-indy modes:
+
+    # Capture non-indy baseline
+    ./gradlew -Pindy=false -PbenchInclude=Memory :perf:jmh > noindy-memory.txt
+
+    # Capture indy memory profile
+    ./gradlew -Pindy=true -PbenchInclude=Memory :perf:jmh > indy-memory.txt
+
+    # Compare results
+    diff noindy-memory.txt indy-memory.txt
+
+For comprehensive memory analysis with GC profiler:
+
+    ./gradlew -Pindy=true -PbenchInclude=Memory :perf:jmh -Pjmh.profilers=gc
+
 === Comparing Indy vs Non-Indy
 
 Run the same benchmark with and without invokedynamic to measure the overhead:
