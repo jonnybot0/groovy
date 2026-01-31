@@ -1,0 +1,42 @@
+{
+  "name": "Cold Startup Workload",
+  "description": "Measures performance of first-time method invocations before callsite caches warm up",
+  "benchmarks": [
+    {
+      "pattern": ".*cold.*",
+      "weight": 0.40,
+      "description": "Cold callsite benchmarks"
+    },
+    {
+      "pattern": ".*FirstCall.*",
+      "weight": 0.30,
+      "description": "First method call measurements"
+    },
+    {
+      "pattern": "MemoryAllocationBench.*createAndCallOnce",
+      "weight": 0.30,
+      "description": "Create-call-discard patterns"
+    }
+  ],
+  "parameters": {
+    "callsiteWarmup": false,
+    "measureFirstInvocation": true
+  },
+  "jvmArgs": [
+    "-Xms128m",
+    "-Xmx128m",
+    "-XX:+UseG1GC",
+    "-XX:TieredStopAtLevel=1"
+  ],
+  "jmhArgs": {
+    "warmupIterations": 0,
+    "measurementIterations": 10,
+    "forks": 3,
+    "mode": "SingleShotTime",
+    "timeUnit": "MICROSECONDS"
+  },
+  "analysis": {
+    "expectedPattern": "Single-shot times should be significantly higher than warmed-up throughput benchmarks",
+    "metrics": ["singleShot.time", "allocation_per_operation"]
+  }
+}

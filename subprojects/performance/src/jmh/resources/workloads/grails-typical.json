@@ -1,0 +1,48 @@
+{
+  "name": "Grails Typical Web Application",
+  "description": "Simulates a typical Grails web application workload with CRUD operations, dynamic finders, and template rendering",
+  "benchmarks": [
+    {
+      "pattern": "RequestLifecycleBench",
+      "weight": 0.30,
+      "description": "Controller request handling lifecycle"
+    },
+    {
+      "pattern": "TemplateRenderBench",
+      "weight": 0.25,
+      "description": "GSP-like view rendering"
+    },
+    {
+      "pattern": "DynamicFinderBench",
+      "weight": 0.20,
+      "description": "GORM dynamic finder methods"
+    },
+    {
+      "pattern": "CollectionOperationsBench",
+      "weight": 0.15,
+      "description": "Groovy collection operations on domain objects"
+    },
+    {
+      "pattern": "EntityTraversalBench",
+      "weight": 0.10,
+      "description": "Traversing domain object relationships"
+    }
+  ],
+  "parameters": {
+    "domainObjectCount": 1000,
+    "collectionSize": 100,
+    "templateComplexity": "medium",
+    "requestsPerSession": 50
+  },
+  "jvmArgs": [
+    "-Xms512m",
+    "-Xmx512m",
+    "-XX:+UseG1GC"
+  ],
+  "jmhArgs": {
+    "warmupIterations": 5,
+    "measurementIterations": 5,
+    "forks": 2,
+    "timeUnit": "MILLISECONDS"
+  }
+}
