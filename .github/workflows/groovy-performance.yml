@@ -1,0 +1,217 @@
+# Licensed to the Apache Software Foundation (ASF) under one or more
+# contributor license agreements.  See the NOTICE file distributed with
+# this work for additional information regarding copyright ownership.
+# The ASF licenses this file to You under the Apache License, Version 2.0
+# (the "License"); you may not use this file except in compliance with
+# the License.  You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+name: Performance Benchmarks
+
+# Run on demand, scheduled weekly, or on performance-related PRs
+on:
+  workflow_dispatch:
+    inputs:
+      benchmark_filter:
+        description: 'Benchmark filter pattern (e.g., ColdCall, Memory, RequestLifecycle)'
+        required: false
+        default: ''
+      compare_baseline:
+        description: 'Compare against baseline'
+        required: false
+        default: 'false'
+        type: boolean
+  schedule:
+    # Run every Sunday at 2am UTC
+    - cron: '0 2 * * 0'
+  pull_request:
+    paths:
+      - 'src/main/**/runtime/**'
+      - 'src/main/**/vmplugin/**'
+      - 'subprojects/performance/**'
+
+permissions:
+  contents: read
+
+env:
+  DEVELOCITY_ACCESS_KEY: ${{ secrets.DEVELOCITY_ACCESS_KEY }}
+
+jobs:
+  # Quick smoke test for PRs
+  performance-smoke:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: 'zulu'
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: Run smoke benchmarks
+        run: |
+          ./gradlew -Pindy=true -PbenchInclude=ColdCall :performance:jmh \
+            -Pjmh.fork=1 -Pjmh.wi=2 -Pjmh.i=3
+        timeout-minutes: 30
+
+      - name: Upload benchmark results
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-smoke-results
+          path: subprojects/performance/build/results/jmh/
+
+  # Full benchmark suite
+  performance-full:
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        mode: ['indy', 'noindy']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: 'zulu'
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: Set benchmark filter
+        id: filter
+        run: |
+          if [ -n "${{ github.event.inputs.benchmark_filter }}" ]; then
+            echo "filter=-PbenchInclude=${{ github.event.inputs.benchmark_filter }}" >> $GITHUB_OUTPUT
+          else
+            echo "filter=" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Run benchmarks (${{ matrix.mode }})
+        run: |
+          INDY_FLAG=${{ matrix.mode == 'indy' && 'true' || 'false' }}
+          ./gradlew -Pindy=$INDY_FLAG ${{ steps.filter.outputs.filter }} :performance:jmh
+        timeout-minutes: 120
+
+      - name: Upload benchmark results
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-results-${{ matrix.mode }}
+          path: subprojects/performance/build/results/jmh/
+
+  # Compare indy vs non-indy
+  performance-compare:
+    needs: performance-full
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: 'zulu'
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: Download indy results
+        uses: actions/download-artifact@v4
+        with:
+          name: benchmark-results-indy
+          path: subprojects/performance/build/results/jmh-compare/
+
+      - name: Rename indy results
+        run: |
+          mv subprojects/performance/build/results/jmh-compare/results.txt \
+             subprojects/performance/build/results/jmh-compare/indy-results.txt
+
+      - name: Download non-indy results
+        uses: actions/download-artifact@v4
+        with:
+          name: benchmark-results-noindy
+          path: subprojects/performance/build/results/jmh-compare/
+
+      - name: Rename non-indy results
+        run: |
+          mv subprojects/performance/build/results/jmh-compare/results.txt \
+             subprojects/performance/build/results/jmh-compare/noindy-results.txt
+
+      - name: Generate comparison report
+        run: |
+          ./gradlew :performance:jmhCompare --offline || true
+
+      - name: Upload comparison report
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-comparison
+          path: subprojects/performance/build/results/jmh-compare/
+
+      - name: Display comparison summary
+        run: |
+          echo "## Performance Comparison: Indy vs Non-Indy" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          if [ -f subprojects/performance/build/results/jmh-compare/comparison-report.txt ]; then
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            cat subprojects/performance/build/results/jmh-compare/comparison-report.txt >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+          fi
+
+  # Memory-focused benchmarks
+  performance-memory:
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: 'zulu'
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: Run memory benchmarks with GC profiler
+        run: |
+          ./gradlew -Pindy=true -PbenchInclude=Memory :performance:jmhGcProfile
+        timeout-minutes: 60
+
+      - name: Upload memory profile results
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-memory-profile
+          path: subprojects/performance/build/results/jmh/
+
+  # Threshold sweep analysis
+  performance-threshold-sweep:
+    if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: 'zulu'
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: Run threshold sweep
+        run: |
+          ./gradlew -PbenchInclude=Warmup :performance:jmhThresholdSweep
+        timeout-minutes: 180
+
+      - name: Upload threshold sweep results
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-threshold-sweep
+          path: subprojects/performance/build/results/jmh-compare/threshold-sweep/
+
+      - name: Display threshold summary
+        run: |
+          echo "## Threshold Sweep Analysis" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          if [ -f subprojects/performance/build/results/jmh-compare/threshold-sweep/threshold-summary.txt ]; then
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            cat subprojects/performance/build/results/jmh-compare/threshold-sweep/threshold-summary.txt >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+          fi
