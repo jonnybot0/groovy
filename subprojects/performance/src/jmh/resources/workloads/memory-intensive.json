@@ -1,0 +1,44 @@
+{
+  "name": "Memory Intensive Workload",
+  "description": "Focuses on memory allocation patterns and callsite cache memory overhead",
+  "benchmarks": [
+    {
+      "pattern": "MemoryAllocationBench",
+      "weight": 0.30,
+      "description": "Heap allocation during Groovy operations"
+    },
+    {
+      "pattern": "CallsiteGrowthBench",
+      "weight": 0.35,
+      "description": "Memory cost of accumulating callsites"
+    },
+    {
+      "pattern": "LongRunningSessionBench",
+      "weight": 0.35,
+      "description": "Memory patterns during sustained load"
+    }
+  ],
+  "parameters": {
+    "callsiteCount": [100, 1000, 10000],
+    "sessionDuration": "extended",
+    "gcMonitoring": true
+  },
+  "jvmArgs": [
+    "-Xms256m",
+    "-Xmx256m",
+    "-XX:+UseG1GC",
+    "-XX:+PrintGCDetails",
+    "-Xlog:gc*:file=gc.log:time,uptime:filecount=5,filesize=10M"
+  ],
+  "jmhArgs": {
+    "warmupIterations": 3,
+    "measurementIterations": 5,
+    "forks": 1,
+    "timeUnit": "MILLISECONDS",
+    "profilers": ["gc"]
+  },
+  "analysis": {
+    "expectedPattern": "Memory should grow proportionally with callsite count; watch for retention issues",
+    "metrics": ["gc.alloc.rate", "gc.churn.PS_Eden_Space", "gc.count"]
+  }
+}

@@ -1,0 +1,41 @@
+{
+  "name": "Dispatch Stress Test",
+  "description": "Stress test focusing on method dispatch mechanisms - polymorphic dispatch, interface dispatch, and mixed-type collections",
+  "benchmarks": [
+    {
+      "pattern": "MixedTypeCollectionBench",
+      "weight": 0.35,
+      "description": "Collections with varying type diversity (2-20 types)"
+    },
+    {
+      "pattern": "InterfaceDispatchBench",
+      "weight": 0.35,
+      "description": "Interface-based polymorphic dispatch"
+    },
+    {
+      "pattern": "PolymorphicDispatchBench",
+      "weight": 0.30,
+      "description": "General polymorphic dispatch scenarios"
+    }
+  ],
+  "parameters": {
+    "typeCount": [2, 5, 10, 20],
+    "collectionSize": 100,
+    "callsiteCount": 1000
+  },
+  "jvmArgs": [
+    "-Xms256m",
+    "-Xmx256m",
+    "-XX:+UseG1GC"
+  ],
+  "jmhArgs": {
+    "warmupIterations": 5,
+    "measurementIterations": 5,
+    "forks": 2,
+    "timeUnit": "MICROSECONDS"
+  },
+  "analysis": {
+    "expectedPattern": "Performance should degrade as type count increases beyond callsite cache size (typically 4-8)",
+    "metrics": ["throughput", "allocation_rate"]
+  }
+}
