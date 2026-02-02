@@ -36,6 +36,11 @@ on:
       - 'src/main/**/runtime/**'
       - 'src/main/**/vmplugin/**'
       - 'subprojects/performance/**'
+  push:
+    paths:
+      - 'src/main/**/runtime/**'
+      - 'src/main/**/vmplugin/**'
+      - 'subprojects/performance/**'
 
 permissions:
   contents: read
