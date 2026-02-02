@@ -53,6 +53,13 @@ import java.util.stream.Stream;
 public class IndyInterface {
     private static final long INDY_OPTIMIZE_THRESHOLD = SystemUtil.getLongSafe("groovy.indy.optimize.threshold", 10_000L);
     private static final long INDY_FALLBACK_THRESHOLD = SystemUtil.getLongSafe("groovy.indy.fallback.threshold", 10_000L);
+    /**
+     * Initial capacity for the call site registry used to track all active call sites
+     * for cache invalidation when metaclass changes occur. The default of 1024 balances
+     * memory usage against resize overhead. Tune via {@code groovy.indy.callsite.initial.capacity}
+     * system property for larger applications.
+     */
+    private static final int INDY_CALLSITE_INITIAL_CAPACITY = SystemUtil.getIntegerSafe("groovy.indy.callsite.initial.capacity", 1024);
 
     /**
      * flags for method and property calls
@@ -175,8 +182,15 @@ public class IndyInterface {
     /**
      * Weak set of all CacheableCallSites. Used to invalidate caches when metaclass changes.
      * Uses WeakReferences so call sites can be garbage collected when no longer referenced.
+     * <p>
+     * Note: Stale (garbage-collected) WeakReferences are cleaned up during each call to
+     * {@link #invalidateSwitchPoints()}. In applications with infrequent metaclass changes,
+     * the set may accumulate some dead references between invalidations. This is acceptable
+     * because: (1) the memory overhead per dead reference is minimal (~16 bytes), and
+     * (2) frameworks like Grails that benefit most from this optimization have frequent
+     * metaclass changes that trigger regular cleanup.
      */
-    private static final Set<WeakReference<CacheableCallSite>> ALL_CALL_SITES = ConcurrentHashMap.newKeySet();
+    private static final Set<WeakReference<CacheableCallSite>> ALL_CALL_SITES = ConcurrentHashMap.newKeySet(INDY_CALLSITE_INITIAL_CAPACITY);
 
     static {
         GroovySystem.getMetaClassRegistry().addMetaClassRegistryChangeEventListener(cmcu -> invalidateSwitchPoints());
@@ -184,6 +198,10 @@ public class IndyInterface {
     
     /**
      * Register a call site for cache invalidation when metaclass changes.
+     * <p>
+     * Registered call sites are held via WeakReferences and will be automatically
+     * removed when garbage collected. Cleanup of stale references occurs during
+     * {@link #invalidateSwitchPoints()}.
      */
     static void registerCallSite(CacheableCallSite callSite) {
         ALL_CALL_SITES.add(new WeakReference<>(callSite));
@@ -204,8 +222,12 @@ public class IndyInterface {
             SwitchPoint.invalidateAll(new SwitchPoint[]{old});
         }
         
-        // Invalidate all call site caches and reset targets to default (cache lookup)
-        // This ensures metaclass changes are visible without using expensive switchpoint guards
+        // Invalidate all call site caches and reset targets to default (cache lookup).
+        // This ensures metaclass changes are visible without using expensive switchpoint guards.
+        // Note: This is best-effort invalidation. A concurrent thread in fromCache() may briefly
+        // reinstall an optimized target after we reset it. This is acceptable because the method
+        // handle guards (SAME_MC, SAME_CLASS) will fail on the next call if the metaclass changed,
+        // forcing a fallback to selectMethod() which will resolve the correct method.
         ALL_CALL_SITES.removeIf(ref -> {
             CacheableCallSite cs = ref.get();
             if (cs == null) {
