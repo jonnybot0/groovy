@@ -48,9 +48,6 @@ import java.util.concurrent.TimeUnit;
  * For memory profiling:
  * ./gradlew -Pindy=true -PbenchInclude=LongRunningSession :perf:jmh -Pjmh.profilers=gc
  */
-@Warmup(iterations = 2, time = 3, timeUnit = TimeUnit.SECONDS)
-@Measurement(iterations = 3, time = 5, timeUnit = TimeUnit.SECONDS)
-@Fork(value = 2, jvmArgs = {"-Xms512m", "-Xmx512m"})
 @BenchmarkMode(Mode.SingleShotTime)
 @OutputTimeUnit(TimeUnit.MILLISECONDS)
 public class LongRunningSessionBench {

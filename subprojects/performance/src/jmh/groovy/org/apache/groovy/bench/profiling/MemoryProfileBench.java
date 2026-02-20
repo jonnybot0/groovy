@@ -39,9 +39,6 @@ import java.util.concurrent.TimeUnit;
  * java -cp build/libs/performance-*-jmh.jar \
  *   org.apache.groovy.bench.profiling.ProfiledBenchmarkRunner "MemoryProfile"
  */
-@Warmup(iterations = 2, time = 2, timeUnit = TimeUnit.SECONDS)
-@Measurement(iterations = 3, time = 2, timeUnit = TimeUnit.SECONDS)
-@Fork(1)
 @BenchmarkMode(Mode.SingleShotTime)
 @OutputTimeUnit(TimeUnit.MILLISECONDS)
 public class MemoryProfileBench {

@@ -45,9 +45,6 @@ import java.util.concurrent.TimeUnit;
  * ./gradlew -Pindy=false -PbenchInclude=MemoryAllocation :perf:jmh
  * ./gradlew -Pindy=true -PbenchInclude=MemoryAllocation :perf:jmh
  */
-@Warmup(iterations = 3, time = 2, timeUnit = TimeUnit.SECONDS)
-@Measurement(iterations = 5, time = 2, timeUnit = TimeUnit.SECONDS)
-@Fork(value = 2, jvmArgs = {"-Xms256m", "-Xmx256m"})
 @BenchmarkMode(Mode.AverageTime)
 @OutputTimeUnit(TimeUnit.MICROSECONDS)
 public class MemoryAllocationBench {

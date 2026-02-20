@@ -44,9 +44,6 @@ import java.util.concurrent.TimeUnit;
  * For GC profiling:
  * ./gradlew -Pindy=true -PbenchInclude=CallsiteGrowth :perf:jmh -Pjmh.profilers=gc
  */
-@Warmup(iterations = 3, time = 2, timeUnit = TimeUnit.SECONDS)
-@Measurement(iterations = 5, time = 2, timeUnit = TimeUnit.SECONDS)
-@Fork(value = 2, jvmArgs = {"-Xms256m", "-Xmx256m"})
 @BenchmarkMode(Mode.SingleShotTime)
 @OutputTimeUnit(TimeUnit.MILLISECONDS)
 @State(Scope.Benchmark)

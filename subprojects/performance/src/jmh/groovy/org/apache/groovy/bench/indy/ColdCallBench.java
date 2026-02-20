@@ -44,9 +44,6 @@ import java.util.concurrent.TimeUnit;
  * Run with: ./gradlew -Pindy=true -PbenchInclude=ColdCallBench :perf:jmh
  * Compare: Run once with -Pindy=true and once without to see the difference.
  */
-@Warmup(iterations = 5, time = 2, timeUnit = TimeUnit.SECONDS)
-@Measurement(iterations = 5, time = 2, timeUnit = TimeUnit.SECONDS)
-@Fork(3)
 @BenchmarkMode(Mode.AverageTime)
 @OutputTimeUnit(TimeUnit.MICROSECONDS)
 public class ColdCallBench {

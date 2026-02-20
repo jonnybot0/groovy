@@ -50,9 +50,6 @@ import java.util.concurrent.TimeUnit;
  *   --jvmArgs="-Dgroovy.indy.optimize.threshold=0 -Dgroovy.indy.fallback.threshold=0"
  * </pre>
  */
-@Warmup(iterations = 3, time = 2, timeUnit = TimeUnit.SECONDS)
-@Measurement(iterations = 5, time = 2, timeUnit = TimeUnit.SECONDS)
-@Fork(3)
 @BenchmarkMode(Mode.Throughput)
 @OutputTimeUnit(TimeUnit.MILLISECONDS)
 public class ThresholdSensitivityBench {
