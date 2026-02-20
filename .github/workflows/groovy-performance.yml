@@ -20,7 +20,7 @@ on:
   workflow_dispatch:
     inputs:
       benchmark_filter:
-        description: 'Benchmark group to run (e.g., dispatch, orm). Leave empty for all groups.'
+        description: 'Filter by subpackage name (e.g., dispatch, orm, indy). Leave empty for all.'
         required: false
         default: ''
       compare_baseline:
@@ -77,10 +77,12 @@ jobs:
   # Full benchmark suite: build once, fan out into parallel matrix jobs
   # ============================================================================
 
-  # Step 1: Build the JMH fat jar once
+  # Step 1: Build the JMH fat jar and discover benchmark groups
   build-jmh-jar:
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.set-matrix.outputs.matrix }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-java@v4
@@ -89,8 +91,19 @@ jobs:
           java-version: '17'
       - uses: gradle/actions/setup-gradle@v4
 
-      - name: Build JMH fat jar
-        run: ./gradlew :performance:jmhJar
+      - name: Build JMH fat jar and discover groups
+        run: ./gradlew :performance:jmhGroups
+
+      - name: Build matrix from groups
+        id: set-matrix
+        run: |
+          GROUPS=$(cat subprojects/performance/build/jmh-groups.json)
+          FILTER="${{ github.event.inputs.benchmark_filter }}"
+          if [ -n "$FILTER" ]; then
+            GROUPS=$(echo "$GROUPS" | jq -c --arg f "$FILTER" '[.[] | select(.group | contains($f))]')
+          fi
+          MATRIX=$(echo "$GROUPS" | jq -c '{include: [.[] | {group, pattern, indy: true}, {group, pattern, indy: false}]}')
+          echo "matrix=$MATRIX" >> "$GITHUB_OUTPUT"
 
       - name: Upload JMH jar
         uses: actions/upload-artifact@v4
@@ -99,36 +112,15 @@ jobs:
           path: subprojects/performance/build/libs/*-jmh.jar
           retention-days: 1
 
-  # Step 2: Read benchmark groups and output matrix JSON
-  discover-groups:
-    if: github.event_name != 'pull_request'
-    runs-on: ubuntu-latest
-    outputs:
-      matrix: ${{ steps.set-matrix.outputs.matrix }}
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Build matrix from benchmark groups
-        id: set-matrix
-        run: |
-          FILTER="${{ github.event.inputs.benchmark_filter }}"
-          if [ -n "$FILTER" ]; then
-            # Run only the requested group
-            MATRIX=$(jq -c --arg f "$FILTER" '[.[] | select(.group == $f)]' .github/benchmark-groups.json)
-          else
-            MATRIX=$(jq -c '.' .github/benchmark-groups.json)
-          fi
-          echo "matrix={\"include\":$(echo "$MATRIX" | jq -c '[.[] | {group: .group, pattern: .pattern, indy: true}] + [.[] | {group: .group, pattern: .pattern, indy: false}]')}" >> "$GITHUB_OUTPUT"
-
-  # Step 3: Run benchmarks in parallel (groups x indy modes)
+  # Step 2: Run benchmarks in parallel (groups x indy modes)
   benchmark-matrix:
-    needs: [build-jmh-jar, discover-groups]
+    needs: build-jmh-jar
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 60
     strategy:
       fail-fast: false
-      matrix: ${{ fromJson(needs.discover-groups.outputs.matrix) }}
+      matrix: ${{ fromJson(needs.build-jmh-jar.outputs.matrix) }}
     steps:
       - uses: actions/setup-java@v4
         with:
@@ -148,7 +140,7 @@ jobs:
             -Dgroovy.target.indy=${{ matrix.indy }} \
             -jar "$JAR" \
             "${{ matrix.pattern }}" \
-            -wi 1 \
+            -f 1 -wi 1 \
             -rf json -rff results.json
         timeout-minutes: 45
 
@@ -297,7 +289,7 @@ jobs:
             -Dgroovy.target.indy=true \
             -jar "$JAR" \
             ".*bench\.memory\..*" \
-            -f 1 -wi 1 -i 1 -r 2s -w 2s \
+            -f 1 -wi 1 \
             -prof gc \
             -rf json -rff gc-profile-results.json
 
