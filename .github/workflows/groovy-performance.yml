@@ -97,12 +97,13 @@ jobs:
       - name: Build matrix from groups
         id: set-matrix
         run: |
-          GROUPS=$(cat subprojects/performance/build/jmh-groups.json)
+          JMH_GROUPS=subprojects/performance/build/jmh-groups.json
           FILTER="${{ github.event.inputs.benchmark_filter }}"
           if [ -n "$FILTER" ]; then
-            GROUPS=$(echo "$GROUPS" | jq -c --arg f "$FILTER" '[.[] | select(.group | contains($f))]')
+            MATRIX=$(jq -c --arg f "$FILTER" '{include: [.[] | select(.group | contains($f)) | {group, pattern, indy: true}, {group, pattern, indy: false}]}' "$JMH_GROUPS")
+          else
+            MATRIX=$(jq -c '{include: [.[] | {group, pattern, indy: true}, {group, pattern, indy: false}]}' "$JMH_GROUPS")
           fi
-          MATRIX=$(echo "$GROUPS" | jq -c '{include: [.[] | {group, pattern, indy: true}, {group, pattern, indy: false}]}')
           echo "matrix=$MATRIX" >> "$GITHUB_OUTPUT"
 
       - name: Upload JMH jar
