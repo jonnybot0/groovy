@@ -34,9 +34,11 @@ performanceTests {
 
 def jmhResultsDir = layout.buildDirectory.dir("results/jmh")
 
-// ============================================================================
-// Threshold Parameter Sweep
-// ============================================================================
+jmh {
+    fork = 3
+    warmupIterations = 3
+    iterations = 5
+}
 
 // ============================================================================
 // Profiling Support
@@ -112,26 +114,18 @@ tasks.register('jmhGcProfile', JavaExec) {
 // ============================================================================
 
 /**
- * Discover all JMH benchmarks from the fat jar and group them by subpackage
- * into appropriately-sized chunks for parallel CI execution.
- *
- * Outputs build/jmh-groups.json — an array of {group, pattern} objects.
+ * Discover all JMH benchmarks from the fat jar and produce one group per
+ * benchmark class. Outputs build/jmh-groups.json for CI matrix generation.
  */
 tasks.register('jmhGroups') {
     group = 'benchmark'
-    description = 'Discover JMH benchmarks and output groups as JSON for CI matrix'
+    description = 'Discover JMH benchmark classes and output groups as JSON for CI matrix'
     dependsOn 'jmhJar'
 
     def outputFile = layout.buildDirectory.file("jmh-groups.json")
     outputs.file(outputFile)
 
     doLast {
-        // Time estimate: 1 fork × (1 warmup @10s + 1 iteration @10s) + ~5s overhead
-        def secondsPerMethod = 25
-        def maxSecondsPerJob = 600 // 10-minute target
-        def maxPerGroup = (maxSecondsPerJob / secondsPerMethod)
-
-        // List all benchmarks from the fat jar
         def benchmarks = providers.javaexec {
             mainClass = 'org.openjdk.jmh.Main'
             classpath = files(tasks.named('jmhJar'))
@@ -140,33 +134,10 @@ tasks.register('jmhGroups') {
             .collect { it.trim() }
             .findAll { it.startsWith('org.apache.groovy.') }
 
-        // Group by subpackage: bench.dispatch.* → "dispatch", bench.Foo → "core", plugin.* → "plugin"
-        def groups = benchmarks.groupBy { fqcn ->
-            def parts = (fqcn - 'org.apache.groovy.').split('\\.')
-            parts[0] == 'bench' ? (parts.length >= 4 ? parts[1] : 'core') : parts[0]
-        }.sort()
-
-        // Build entries, splitting large groups into right-sized chunks by class
-        def entries = groups.collectMany { name, methods ->
-            if (methods.size() <= maxPerGroup) {
-                def pattern = name == 'core'
-                    ? ".*(" + methods.collect { it.split('\\.')[-2] }.unique().sort().join('|') + ").*"
-                    : ".*\\.${name}\\..*"
-                return [[group: name, pattern: pattern, benchmarks: methods.size()]]
-            }
-            methods.groupBy { it.split('\\.')[-2] }.sort()
-                .inject([[classes: [], count: 0]]) { chunks, cls, meths ->
-                    def last = chunks.last()
-                    if (last.count + meths.size() > maxPerGroup && last.classes) {
-                        chunks << [classes: [cls], count: meths.size()]
-                    } else {
-                        last.classes << cls
-                        last.count += meths.size()
-                        chunks
-                    }
-                }.withIndex(1).collect { chunk, i ->
-                    [group: "${name}-${i}", pattern: ".*(" + chunk.classes.join('|') + ").*", benchmarks: chunk.count]
-                }
+        // One group per benchmark class: "org.apache.groovy.bench.orm.PropertyAccessBench.method" → "PropertyAccessBench"
+        def entries = benchmarks.groupBy { it[0..it.lastIndexOf('.') - 1] }.sort().collect { fqcn, methods ->
+            def className = fqcn[fqcn.lastIndexOf('.') + 1..-1]
+            [group: className, pattern: "${fqcn}.*", benchmarks: methods.size()]
         }
 
         def json = groovy.json.JsonOutput.prettyPrint(groovy.json.JsonOutput.toJson(entries))
