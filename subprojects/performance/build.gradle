@@ -328,3 +328,81 @@ tasks.register('jmhCompareBaseline') {
         }
     }
 }
+
+// ============================================================================
+// Dynamic Benchmark Grouping (for CI matrix)
+// ============================================================================
+
+/**
+ * Discover all JMH benchmarks from the fat jar and group them by subpackage
+ * into appropriately-sized chunks for parallel CI execution.
+ *
+ * Outputs build/jmh-groups.json — an array of {group, pattern} objects.
+ */
+tasks.register('jmhGroups') {
+    group = 'benchmark'
+    description = 'Discover JMH benchmarks and output groups as JSON for CI matrix'
+    dependsOn 'jmhJar'
+
+    def outputFile = layout.buildDirectory.file("jmh-groups.json")
+    outputs.file(outputFile)
+
+    doLast {
+        // Time estimate: 1 fork × (1 warmup @10s + 1 iteration @10s) + ~5s overhead
+        def secondsPerMethod = 25
+        def maxSecondsPerJob = 600 // 10-minute target
+        def maxPerGroup = (int) (maxSecondsPerJob / secondsPerMethod)
+
+        // List all benchmarks from the fat jar
+        def listing = new ByteArrayOutputStream()
+        project.javaexec {
+            mainClass = 'org.openjdk.jmh.Main'
+            classpath = files(tasks.named('jmhJar'))
+            args '-l'
+            standardOutput = listing
+        }
+
+        def benchmarks = listing.toString().readLines()
+            .collect { it.trim() }
+            .findAll { it.startsWith('org.apache.groovy.') }
+
+        // Group by subpackage: bench.dispatch.* → "dispatch", bench.Foo → "core", plugin.* → "plugin"
+        def groups = benchmarks.groupBy { fqcn ->
+            def parts = (fqcn - 'org.apache.groovy.').split('\\.')
+            parts[0] == 'bench' ? (parts.length >= 4 ? parts[1] : 'core') : parts[0]
+        }.sort()
+
+        // Build entries, splitting large groups by class
+        def entries = []
+        groups.each { name, methods ->
+            if (methods.size() <= maxPerGroup) {
+                def pattern = name == 'core'
+                    ? ".*(" + methods.collect { it.split('\\.')[-2] }.unique().sort().join('|') + ").*"
+                    : ".*\\.${name}\\..*"
+                entries << [group: name, pattern: pattern, benchmarks: methods.size()]
+            } else {
+                def byClass = methods.groupBy { it.split('\\.')[-2] }
+                def chunk = []
+                int chunkMethods = 0
+                int chunkNum = 1
+                byClass.sort().each { cls, meths ->
+                    if (chunkMethods + meths.size() > maxPerGroup && chunk) {
+                        entries << [group: "${name}-${chunkNum}", pattern: ".*(" + chunk.join('|') + ").*", benchmarks: chunkMethods]
+                        chunk = []
+                        chunkMethods = 0
+                        chunkNum++
+                    }
+                    chunk << cls
+                    chunkMethods += meths.size()
+                }
+                if (chunk) {
+                    entries << [group: "${name}-${chunkNum}", pattern: ".*(" + chunk.join('|') + ").*", benchmarks: chunkMethods]
+                }
+            }
+        }
+
+        def json = groovy.json.JsonOutput.prettyPrint(groovy.json.JsonOutput.toJson(entries))
+        outputFile.get().asFile.text = json
+        println json
+    }
+}
