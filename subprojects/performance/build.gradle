@@ -65,7 +65,7 @@ tasks.register('jmhThresholdSweep') {
             def outputFile = sweepDir.get().file("threshold-${threshold}.txt").asFile
 
             // Run JMH with this threshold
-            project.javaexec {
+            providers.javaexec {
                 mainClass = 'org.openjdk.jmh.Main'
                 classpath = files(tasks.named('jmhJar'))
                 args '-rf', 'text'
@@ -79,7 +79,7 @@ tasks.register('jmhThresholdSweep') {
                 }
 
                 jvmArgs "-Dgroovy.indy.optimize.threshold=${threshold}"
-            }
+            }.result.get()
 
             // Parse results
             if (outputFile.exists()) {
@@ -351,18 +351,14 @@ tasks.register('jmhGroups') {
         // Time estimate: 1 fork × (1 warmup @10s + 1 iteration @10s) + ~5s overhead
         def secondsPerMethod = 25
         def maxSecondsPerJob = 600 // 10-minute target
-        def maxPerGroup = (int) (maxSecondsPerJob / secondsPerMethod)
+        def maxPerGroup = (maxSecondsPerJob / secondsPerMethod)
 
         // List all benchmarks from the fat jar
-        def listing = new ByteArrayOutputStream()
-        project.javaexec {
+        def benchmarks = providers.javaexec {
             mainClass = 'org.openjdk.jmh.Main'
             classpath = files(tasks.named('jmhJar'))
             args '-l'
-            standardOutput = listing
-        }
-
-        def benchmarks = listing.toString().readLines()
+        }.standardOutput.asText.get().readLines()
             .collect { it.trim() }
             .findAll { it.startsWith('org.apache.groovy.') }
 
@@ -372,33 +368,27 @@ tasks.register('jmhGroups') {
             parts[0] == 'bench' ? (parts.length >= 4 ? parts[1] : 'core') : parts[0]
         }.sort()
 
-        // Build entries, splitting large groups by class
-        def entries = []
-        groups.each { name, methods ->
+        // Build entries, splitting large groups into right-sized chunks by class
+        def entries = groups.collectMany { name, methods ->
             if (methods.size() <= maxPerGroup) {
                 def pattern = name == 'core'
                     ? ".*(" + methods.collect { it.split('\\.')[-2] }.unique().sort().join('|') + ").*"
                     : ".*\\.${name}\\..*"
-                entries << [group: name, pattern: pattern, benchmarks: methods.size()]
-            } else {
-                def byClass = methods.groupBy { it.split('\\.')[-2] }
-                def chunk = []
-                int chunkMethods = 0
-                int chunkNum = 1
-                byClass.sort().each { cls, meths ->
-                    if (chunkMethods + meths.size() > maxPerGroup && chunk) {
-                        entries << [group: "${name}-${chunkNum}", pattern: ".*(" + chunk.join('|') + ").*", benchmarks: chunkMethods]
-                        chunk = []
-                        chunkMethods = 0
-                        chunkNum++
-                    }
-                    chunk << cls
-                    chunkMethods += meths.size()
-                }
-                if (chunk) {
-                    entries << [group: "${name}-${chunkNum}", pattern: ".*(" + chunk.join('|') + ").*", benchmarks: chunkMethods]
-                }
+                return [[group: name, pattern: pattern, benchmarks: methods.size()]]
             }
+            methods.groupBy { it.split('\\.')[-2] }.sort()
+                .inject([[classes: [], count: 0]]) { chunks, cls, meths ->
+                    def last = chunks.last()
+                    if (last.count + meths.size() > maxPerGroup && last.classes) {
+                        chunks << [classes: [cls], count: meths.size()]
+                    } else {
+                        last.classes << cls
+                        last.count += meths.size()
+                        chunks
+                    }
+                }.withIndex(1).collect { chunk, i ->
+                    [group: "${name}-${i}", pattern: ".*(" + chunk.classes.join('|') + ").*", benchmarks: chunk.count]
+                }
         }
 
         def json = groovy.json.JsonOutput.prettyPrint(groovy.json.JsonOutput.toJson(entries))
